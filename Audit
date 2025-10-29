@@ -1,0 +1,330 @@
+# ===============================================================
+# Project Guardian (Debug Edition)
+# Unreal Engine 5.6
+# ---------------------------------------------------------------
+# My first real tool attempt 😅
+# Trying to make something that can check my project for issues
+# like missing assets, nanite off, naming problems etc.
+# ===============================================================
+
+import unreal
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QTextEdit, QVBoxLayout, QLabel, QListWidget, QListWidgetItem
+from PySide6.QtCore import Qt
+import re
+
+
+# ---------------------------------------------------------------
+# 1. UI FIRST (always start with the UI lol)
+# ---------------------------------------------------------------
+
+class ProjectGuardianUI(QWidget):
+    def __init__(self, controller):
+        super().__init__()
+        self.controller = controller
+
+        self.setWindowTitle("Project Guardian 🛡️")
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.setMinimumWidth(500)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("🔍 Project Audit Tools"))
+
+        # buttons
+        self.btn_audit = QPushButton("🔎 Run Audit")
+        self.btn_fix_names = QPushButton("🪄 Auto Fix Names")
+        self.btn_enable_nanite = QPushButton("⚡ Enable Nanite on Meshes")
+        self.btn_unused = QPushButton("🧹 Find Unused Assets")
+
+        layout.addWidget(self.btn_audit)
+        layout.addWidget(self.btn_fix_names)
+        layout.addWidget(self.btn_enable_nanite)
+        layout.addWidget(self.btn_unused)
+
+        layout.addWidget(QLabel("📜 Results"))
+        self.results = QListWidget()
+        layout.addWidget(self.results)
+
+        layout.addWidget(QLabel("📝 Log"))
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        layout.addWidget(self.log_box)
+
+        # connect stuff
+        self.btn_audit.clicked.connect(self.controller.on_audit)
+        self.btn_fix_names.clicked.connect(self.controller.on_fix_names)
+        self.btn_enable_nanite.clicked.connect(self.controller.on_enable_nanite)
+        self.btn_unused.clicked.connect(self.controller.on_find_unused)
+
+    def add_result(self, text):
+        print(f"[DEBUG] Adding result: {text}")
+        self.results.addItem(QListWidgetItem(text))
+
+    def log(self, text):
+        print(f"[LOG] {text}")
+        self.log_box.append(text)
+
+    def clear_results(self):
+        print("[DEBUG] Clearing results list")
+        self.results.clear()
+
+
+# ---------------------------------------------------------------
+# 2. HELPER FUNCTIONS
+# ---------------------------------------------------------------
+
+def build_object_path(asset_data):
+    path = f"{asset_data.package_name}.{asset_data.asset_name}"
+    print(f"[DEBUG] Built object path: {path}")
+    return path
+
+
+def is_under_game(asset_data):
+    check = str(asset_data.package_name).startswith("/Game")
+    if not check:
+        print(f"[DEBUG] Skipping non-game asset: {asset_data.package_name}")
+    return check
+
+
+def load_asset_safe(asset_path):
+    print(f"[DEBUG] Trying to load asset: {asset_path}")
+    try:
+        return unreal.EditorAssetLibrary.load_asset(asset_path)
+    except Exception as e:
+        print(f"[ERROR] Could not load asset: {asset_path} -> {e}")
+        return None
+
+
+def is_static_mesh(asset_data):
+    try:
+        is_mesh = asset_data.asset_class_path.asset_name == "StaticMesh"
+        print(f"[DEBUG] {asset_data.asset_name} is mesh: {is_mesh}")
+        return is_mesh
+    except:
+        return False
+
+
+def bad_name(name):
+    if " " in name:
+        return "has spaces"
+    if name.startswith("New") or name.startswith("Untitled"):
+        return "placeholder name"
+    if name[0].islower():
+        return "starts lowercase"
+    return None
+
+
+def get_prefix_for_class(asset_class):
+    print(f"[DEBUG] Getting prefix for class: {asset_class}")
+    if "StaticMesh" in asset_class:
+        return "SM_"
+    elif "MaterialInstance" in asset_class:
+        return "MI_"
+    elif "Material" in asset_class:
+        return "M_"
+    elif "Texture" in asset_class:
+        return "T_"
+    elif "Blueprint" in asset_class:
+        return "BP_"
+    return "A_"
+
+
+def clean_name(name):
+    print(f"[DEBUG] Cleaning name: {name}")
+    name = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    return name.replace(" ", "_").title().replace("_", "")
+
+
+# ---------------------------------------------------------------
+# 3. SCAN FUNCTIONS
+# ---------------------------------------------------------------
+
+def find_missing_assets():
+    print("[DEBUG] Starting missing asset scan...")
+    broken = []
+    reg = unreal.AssetRegistryHelpers.get_asset_registry()
+    for asset_data in reg.get_all_assets():
+        if not is_under_game(asset_data):
+            continue
+        path = build_object_path(asset_data)
+        if not load_asset_safe(path):
+            broken.append((path, "Missing / can't load"))
+            print(f"[FOUND] Missing asset: {path}")
+    print(f"[DEBUG] Done. Found {len(broken)} broken assets.")
+    return broken
+
+
+def find_unused_assets():
+    print("[DEBUG] Checking for unused assets...")
+    unused = []
+    reg = unreal.AssetRegistryHelpers.get_asset_registry()
+    for a in reg.get_all_assets():
+        if not is_under_game(a):
+            continue
+        path = build_object_path(a)
+        refs = unreal.EditorAssetLibrary.find_package_referencers_for_asset(path)
+        if not refs:
+            unused.append((path, "Unused asset"))
+            print(f"[FOUND] Unused: {path}")
+    print(f"[DEBUG] Done. Found {len(unused)} unused assets.")
+    return unused
+
+
+def audit_naming_and_nanite():
+    print("[DEBUG] Auditing naming + nanite...")
+    bad_names = []
+    no_nanite = []
+    reg = unreal.AssetRegistryHelpers.get_asset_registry()
+
+    for a in reg.get_all_assets():
+        if not is_under_game(a):
+            continue
+        path = build_object_path(a)
+
+        problem = bad_name(str(a.asset_name))
+        if problem:
+            bad_names.append((path, f"Naming issue: {problem}"))
+            print(f"[FOUND] Bad name: {path}")
+
+        if is_static_mesh(a):
+            mesh = load_asset_safe(path)
+            if mesh:
+                try:
+                    settings = mesh.get_editor_property("nanite_settings")
+                    if not settings.get_editor_property("enabled"):
+                        no_nanite.append((path, "Nanite disabled"))
+                        print(f"[FOUND] Nanite disabled: {path}")
+                except:
+                    print(f"[WARN] Could not check nanite for {path}")
+                    no_nanite.append((path, "Nanite check failed"))
+    print(f"[DEBUG] Done. Found {len(bad_names)} bad names and {len(no_nanite)} nanite issues.")
+    return bad_names, no_nanite
+
+
+# ---------------------------------------------------------------
+# 4. FIX FUNCTIONS
+# ---------------------------------------------------------------
+
+def enable_nanite_everywhere():
+    print("[DEBUG] Enabling nanite everywhere...")
+    changed = 0
+    reg = unreal.AssetRegistryHelpers.get_asset_registry()
+    for a in reg.get_all_assets():
+        if not is_under_game(a):
+            continue
+        if not is_static_mesh(a):
+            continue
+        mesh = load_asset_safe(build_object_path(a))
+        if not mesh:
+            continue
+        try:
+            settings = mesh.get_editor_property("nanite_settings")
+            if not settings.get_editor_property("enabled"):
+                settings.set_editor_property("enabled", True)
+                mesh.set_editor_property("nanite_settings", settings)
+                unreal.EditorAssetLibrary.save_loaded_asset(mesh)
+                changed += 1
+                print(f"[UPDATED] Enabled nanite: {a.asset_name}")
+        except Exception as e:
+            print(f"[ERROR] Nanite enable failed for {a.asset_name}: {e}")
+    print(f"[DEBUG] Done. Changed {changed} meshes.")
+    return changed
+
+
+def fix_asset_names():
+    print("[DEBUG] Trying to fix asset names...")
+    fixed = []
+    reg = unreal.AssetRegistryHelpers.get_asset_registry()
+    for a in reg.get_all_assets():
+        if not is_under_game(a):
+            continue
+
+        old_name = str(a.asset_name)
+        try:
+            asset_class = a.asset_class_path.asset_name
+        except:
+            asset_class = str(a.asset_class)
+
+        prefix = get_prefix_for_class(str(asset_class))
+        if old_name.startswith(prefix):
+            continue
+
+        new_name = prefix + clean_name(old_name)
+        old_path = build_object_path(a)
+        pkg = str(a.package_path)
+
+        try:
+            success = unreal.EditorAssetLibrary.rename_asset(old_path, f"{pkg}/{new_name}")
+            if success:
+                fixed.append((old_name, new_name))
+                print(f"[RENAMED] {old_name} → {new_name}")
+        except Exception as e:
+            print(f"[ERROR] Rename failed: {e}")
+    print(f"[DEBUG] Done. Fixed {len(fixed)} names.")
+    return fixed
+
+
+# ---------------------------------------------------------------
+# 5. CONTROLLER STUFF
+# ---------------------------------------------------------------
+
+class ProjectGuardianController:
+    def __init__(self):
+        print("[DEBUG] Launching Project Guardian...")
+        app = QApplication.instance()
+        if not app:
+            app = QApplication([])
+        self.ui = ProjectGuardianUI(self)
+        self.ui.show()
+
+    def on_audit(self):
+        print("[DEBUG] Starting full audit...")
+        self.ui.clear_results()
+        self.ui.log("Running audit...")
+
+        missing = find_missing_assets()
+        names, nanite = audit_naming_and_nanite()
+
+        if not missing and not names and not nanite:
+            self.ui.log("✅ No major problems found!")
+        else:
+            for p, issue in missing + names + nanite:
+                self.ui.add_result(f"{p}: {issue}")
+            self.ui.log("🚨 Audit done, found issues. Check list.")
+
+    def on_fix_names(self):
+        print("[DEBUG] Fixing names...")
+        self.ui.log("Trying to fix names...")
+        changed = fix_asset_names()
+        for old, new in changed:
+            self.ui.add_result(f"Renamed {old} → {new}")
+        if not changed:
+            self.ui.log("✨ Nothing to rename!")
+
+    def on_enable_nanite(self):
+        print("[DEBUG] Enabling nanite for all meshes...")
+        self.ui.log("Turning Nanite ON...")
+        num = enable_nanite_everywhere()
+        self.ui.log(f"✅ Nanite enabled on {num} meshes.")
+
+    def on_find_unused(self):
+        print("[DEBUG] Looking for unused assets...")
+        self.ui.log("Checking unused assets...")
+        unused = find_unused_assets()
+        if unused:
+            for path, issue in unused:
+                self.ui.add_result(f"{path}: {issue}")
+        else:
+            self.ui.log("✅ No unused assets found.")
+
+
+# ---------------------------------------------------------------
+# 6. RUN IT
+# ---------------------------------------------------------------
+
+def launch_project_guardian():
+    ProjectGuardianController()
+
+
+if __name__ == "__main__":
+    print("[DEBUG] Script started.")
+    launch_project_guardian()
