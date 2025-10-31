@@ -1,16 +1,79 @@
 # ===============================================================
-# Project Guardian (Debug Edition)
+# Project Guardian (Debug Edition with Toolbar)
 # Unreal Engine 5.6
 # ---------------------------------------------------------------
-# My first real tool attempt 😅
-# Trying to make something that can check my project for issues
-# like missing assets, nanite off, naming problems etc.
+# Adds a top-level Unreal toolbar menu item called "Project Guardian"
+# so you can open this audit tool directly from the editor.
 # ===============================================================
 
 import unreal
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QTextEdit, QVBoxLayout, QLabel, QListWidget, QListWidgetItem
 from PySide6.QtCore import Qt
 import re
+
+
+# ---------------------------------------------------------------
+# 0. Unreal Toolbar Menu
+# ---------------------------------------------------------------
+class PGToolMenu:
+    def __init__(self):
+        self.tool_menus = unreal.ToolMenus.get()
+        self.menu_owner = "ProjectGuardian"
+        self.menu_name = "LevelEditor.MainMenu.ProjectGuardian"
+        self.pg_menu = None
+
+    def create_menu(self):
+        unreal.log("Creating Project Guardian Menu...")
+
+        # Check if already exists
+        existing = self.tool_menus.find_menu(self.menu_name)
+        if existing:
+            unreal.log("Project Guardian Menu already exists, skipping registration.")
+            self.pg_menu = existing
+            return
+
+        # Create the menu
+        main_menu = self.tool_menus.find_menu("LevelEditor.MainMenu")
+        if not main_menu:
+            unreal.log_warning("Could not find LevelEditor.MainMenu")
+            return
+
+        # Add submenu
+        self.pg_menu = main_menu.add_sub_menu(
+            owner_name=self.menu_owner,
+            section_name="CustomTools",
+            name=self.menu_owner,
+            label="Project Guardian",
+            tool_tip="Audit and Fix Project Assets"
+        )
+
+        self.tool_menus.refresh_all_widgets()
+        unreal.log("✅ Project Guardian Menu created.")
+
+    def create_menu_entry(self):
+        unreal.log("Creating Project Guardian menu entry...")
+
+        module_name = "ProjectGuardianTool"  # <-- Must match your .py filename!
+        command = f"import {module_name}; {module_name}.launch_project_guardian()"
+
+        # Create a new entry that calls our tool
+        menu_entry = unreal.ToolMenuEntry(
+            name="OpenProjectGuardian",
+            type=unreal.MultiBlockType.MENU_ENTRY,
+            insert_position=unreal.ToolMenuInsert("", unreal.ToolMenuInsertType.FIRST)
+        )
+        menu_entry.set_label("Open Project Guardian")
+        menu_entry.set_tool_tip("Open the Project Guardian window")
+        menu_entry.set_icon("EditorStyle", "Kismet.Tabs.BlueprintDebugger")
+        menu_entry.set_string_command(
+            type=unreal.ToolMenuStringCommandType.PYTHON,
+            string=command
+        )
+
+        # Add it into the menu
+        self.pg_menu.add_menu_entry("Utils", menu_entry)
+        self.tool_menus.refresh_all_widgets()
+        unreal.log("✅ Project Guardian menu entry added.")
 
 
 # ---------------------------------------------------------------
@@ -29,7 +92,7 @@ class ProjectGuardianUI(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("🔍 Project Audit Tools"))
 
-        # buttons
+        # Buttons
         self.btn_audit = QPushButton("🔎 Run Audit")
         self.btn_fix_names = QPushButton("🪄 Auto Fix Names")
         self.btn_enable_nanite = QPushButton("⚡ Enable Nanite on Meshes")
@@ -49,7 +112,7 @@ class ProjectGuardianUI(QWidget):
         self.log_box.setReadOnly(True)
         layout.addWidget(self.log_box)
 
-        # connect stuff
+        # Connect events
         self.btn_audit.clicked.connect(self.controller.on_audit)
         self.btn_fix_names.clicked.connect(self.controller.on_fix_names)
         self.btn_enable_nanite.clicked.connect(self.controller.on_enable_nanite)
@@ -135,7 +198,7 @@ def clean_name(name):
 
 
 # ---------------------------------------------------------------
-# 3. SCAN FUNCTIONS
+# 3. SCAN + FIX FUNCTIONS
 # ---------------------------------------------------------------
 
 def find_missing_assets():
@@ -200,10 +263,6 @@ def audit_naming_and_nanite():
     return bad_names, no_nanite
 
 
-# ---------------------------------------------------------------
-# 4. FIX FUNCTIONS
-# ---------------------------------------------------------------
-
 def enable_nanite_everywhere():
     print("[DEBUG] Enabling nanite everywhere...")
     changed = 0
@@ -264,7 +323,7 @@ def fix_asset_names():
 
 
 # ---------------------------------------------------------------
-# 5. CONTROLLER STUFF
+# 4. CONTROLLER
 # ---------------------------------------------------------------
 
 class ProjectGuardianController:
@@ -318,13 +377,22 @@ class ProjectGuardianController:
 
 
 # ---------------------------------------------------------------
-# 6. RUN IT
+# 5. LAUNCHER
 # ---------------------------------------------------------------
 
 def launch_project_guardian():
+    """Called from Unreal toolbar"""
     ProjectGuardianController()
 
 
+def setup_menu():
+    """Registers the Project Guardian toolbar menu"""
+    menu = PGToolMenu()
+    menu.create_menu()
+    menu.create_menu_entry()
+
+
 if __name__ == "__main__":
-    print("[DEBUG] Script started.")
+    print("[DEBUG] Setting up Project Guardian...")
+    setup_menu()
     launch_project_guardian()
